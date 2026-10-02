@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-type BuiltinFunc func(args []string, stdOut io.Writer)
+type BuiltinFunc func(args []string, stdOut io.Writer, stdErr io.Writer)
 
 var builtins map[string]BuiltinFunc
 
@@ -105,55 +105,73 @@ func parse(line string) (string, []string, error) {
 // Check command type and exec with args
 func eval(cmd string, args []string) {
 	var stdOut io.Writer = os.Stdout
-	var outFile *os.File
+	var stdErr io.Writer = os.Stderr
+	var newFile *os.File
+	var op string
 
 	index := slices.IndexFunc(args, func(arg string) bool {
-		return arg == ">" || arg == "1>"
+		return arg == ">" || arg == "1>" || arg == "2>" || arg == ">>" || arg == "1>>"
 	})
 
 	if index != -1 {
+		op := args[index]
 		var err error
 		targetPath := args[index+1]
 
-		// Ricava la directory padre (nel tuo caso "/tmp/fox") e creala se non esiste
+		// Check if directory exists or create it
 		dir := filepath.Dir(targetPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return
 		}
-		outFile, err = os.Create(args[index+1])
+
+		newFile, err = os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			fmt.Print("Error during creating file")
 			return
 		}
-		defer outFile.Close()
-		stdOut = outFile
+
+		if op != ">>" && op != "1>>" {
+			newFile, err = os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY, 0644)
+			if op == ">" || op == "1>" {
+				defer newFile.Close()
+				stdOut = newFile
+			} else if op == "2>" {
+				defer newFile.Close()
+				stdErr = newFile
+			}
+		} else {
+			newFile, err = os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			defer newFile.Close()
+			stdOut = newFile
+		}
+
 		args = append(args[:index], args[index+2:]...)
 	}
 
 	// Check if builtin command and exec
 	if handler, ok := builtins[cmd]; ok {
-		handler(args, stdOut)
+		handler(args, stdOut, stdErr)
 		return
 	}
 
 	// Check if exe in PATH
 	if _, err := exec.LookPath(cmd); err == nil {
-		handleExe(cmd, args, stdOut)
+		handleExe(cmd, args, op, stdOut, stdErr)
 		return
 	}
 
 	fmt.Printf("%s: command not found\n", cmd)
 }
 
-func handleExit(args []string, stdOut io.Writer) {
+func handleExit(args []string, stdOut io.Writer, stdErr io.Writer) {
 	os.Exit(0)
 }
 
-func handleEcho(args []string, stdOut io.Writer) {
+func handleEcho(args []string, stdOut io.Writer, stdErr io.Writer) {
 	fmt.Fprintln(stdOut, strings.Join(args, " "))
 }
 
-func handleType(args []string, stdOut io.Writer) {
+func handleType(args []string, stdOut io.Writer, stdErr io.Writer) {
 	if len(args) == 0 {
 		return
 	}
@@ -172,7 +190,7 @@ func handleType(args []string, stdOut io.Writer) {
 	}
 }
 
-func handlePwd(args []string, stdOut io.Writer) {
+func handlePwd(args []string, stdOut io.Writer, stdErr io.Writer) {
 	dir, err := os.Getwd()
 
 	if err != nil {
@@ -182,7 +200,7 @@ func handlePwd(args []string, stdOut io.Writer) {
 	fmt.Printf("%s\n", dir)
 }
 
-func handleCd(args []string, stdOut io.Writer) {
+func handleCd(args []string, stdOut io.Writer, stdErr io.Writer) {
 	var targetDir string
 
 	if len(args) == 0 || args[0] == "~" {
@@ -201,15 +219,12 @@ func handleCd(args []string, stdOut io.Writer) {
 	}
 }
 
-func handleExe(name string, args []string, stdOut io.Writer) {
+func handleExe(name string, args []string, op string, stdOut io.Writer, stdErr io.Writer) {
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = stdOut
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("Error during execution\n")
-		return
-	}
+	cmd.Stderr = stdErr
+	cmd.Run()
 }
 
 func main() {
